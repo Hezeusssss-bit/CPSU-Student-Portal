@@ -930,7 +930,14 @@ $deleted = isset($_GET['deleted']) && $_GET['deleted'] == '1';
       </div>
       <div class="form-group">
         <label class="form-label" for="department">Department</label>
-        <input type="text" id="department" name="department" class="form-input" required placeholder="e.g., Computer Science">
+        <select id="department" name="department" class="form-input" required>
+          <option value="">Select Department</option>
+          <option value="CSS">CSS</option>
+          <option value="CHM">CHM</option>
+          <option value="COE">COE</option>
+          <option value="CAF">CAF</option>
+          <option value="CSE">CSE</option>
+        </select>
         <div class="error-message" id="department_error"></div>
       </div>
       <div class="form-group">
@@ -974,7 +981,14 @@ $deleted = isset($_GET['deleted']) && $_GET['deleted'] == '1';
       </div>
       <div class="form-group">
         <label class="form-label" for="edit_department">Department</label>
-        <input type="text" id="edit_department" name="department" class="form-input" required>
+        <select id="edit_department" name="department" class="form-input" required>
+          <option value="">Select Department</option>
+          <option value="CSS">CSS</option>
+          <option value="CHM">CHM</option>
+          <option value="COE">COE</option>
+          <option value="CAF">CAF</option>
+          <option value="CSE">CSE</option>
+        </select>
       </div>
       <div class="form-group">
         <label class="form-label" for="edit_password">Password (leave blank to keep current)</label>

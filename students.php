@@ -27,10 +27,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Handle delete
         $student_id = $_POST['student_id'] ?? '';
         try {
-            $stmt = $pdo->prepare("DELETE FROM students WHERE student_id = ?");
+            // Get the internal student ID first
+            $stmt = $pdo->prepare("SELECT id FROM students WHERE student_id = ?");
             $stmt->execute([$student_id]);
-            header('Location: students.php?deleted=1');
-            exit;
+            $internal_id = $stmt->fetchColumn();
+            
+            if ($internal_id) {
+                // Delete from student_courses first (due to foreign key)
+                $stmt = $pdo->prepare("DELETE FROM student_courses WHERE student_id = ?");
+                $stmt->execute([$internal_id]);
+                
+                // Delete from grades
+                $stmt = $pdo->prepare("DELETE FROM grades WHERE student_id = ?");
+                $stmt->execute([$internal_id]);
+                
+                // Delete the student
+                $stmt = $pdo->prepare("DELETE FROM students WHERE id = ?");
+                $stmt->execute([$internal_id]);
+                
+                header('Location: students.php?deleted=1');
+                exit;
+            } else {
+                $errors[] = 'Student not found';
+            }
         } catch(PDOException $e) {
             $errors[] = 'Database error: ' . $e->getMessage();
         }
@@ -40,6 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $student_id = trim($_POST['student_id'] ?? '');
         $full_name = trim($_POST['full_name'] ?? '');
         $email = trim($_POST['email'] ?? '');
+        $course = trim($_POST['course'] ?? '');
         $password = $_POST['password'] ?? '';
         
         $errors = [];
@@ -55,6 +75,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = 'Email is required';
         } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $errors[] = 'Invalid email format';
+        }
+        if (empty($course)) {
+            $errors[] = 'Course is required';
         }
         
         // Check if student_id already exists (excluding current record)
@@ -78,6 +101,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Update student if no errors
         if (empty($errors)) {
             try {
+                // Get the student's internal ID
+                $stmt = $pdo->prepare("SELECT id FROM students WHERE student_id = ?");
+                $stmt->execute([$original_student_id]);
+                $student_internal_id = $stmt->fetchColumn();
+                
                 if (!empty($password)) {
                     // Update with new password
                     if (strlen($password) < 6) {
@@ -93,6 +121,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute([$student_id, $full_name, $email, $original_student_id]);
                 }
                 
+                // Update course enrollment - delete old enrollments and add new one
+                $stmt = $pdo->prepare("DELETE FROM student_courses WHERE student_id = ?");
+                $stmt->execute([$student_internal_id]);
+                $stmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_code, enrolled_at) VALUES (?, ?, NOW())");
+                $stmt->execute([$student_internal_id, $course]);
+                
                 if (empty($errors)) {
                     header('Location: students.php?edited=1');
                     exit;
@@ -106,6 +140,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $student_id = trim($_POST['student_id'] ?? '');
         $full_name = trim($_POST['full_name'] ?? '');
         $email = trim($_POST['email'] ?? '');
+        $course = trim($_POST['course'] ?? '');
         $password = $_POST['password'] ?? '';
         
         $errors = [];
@@ -121,6 +156,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = 'Email is required';
         } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $errors[] = 'Invalid email format';
+        }
+        if (empty($course)) {
+            $errors[] = 'Course is required';
         }
         if (empty($password)) {
             $errors[] = 'Password is required';
@@ -153,6 +191,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $pdo->prepare("INSERT INTO students (student_id, full_name, email, password, created_at) VALUES (?, ?, ?, ?, NOW())");
                 $stmt->execute([$student_id, $full_name, $email, $hashed_password]);
                 
+                // Get the new student ID
+                $new_student_id = $pdo->lastInsertId();
+                
+                // Enroll student in the selected course
+                $stmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_code, enrolled_at) VALUES (?, ?, NOW())");
+                $stmt->execute([$new_student_id, $course]);
+                
                 // Redirect to refresh the page
                 header('Location: students.php?success=1');
                 exit;
@@ -163,8 +208,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch students
-$students = $pdo->query("SELECT student_id, full_name, email, created_at FROM students ORDER BY created_at DESC")->fetchAll(PDO::FETCH_ASSOC);
+// Fetch courses for dropdown
+try {
+    $courses = $pdo->query("SELECT course_code, course_name FROM courses ORDER BY course_name ASC")->fetchAll(PDO::FETCH_ASSOC);
+} catch(PDOException $e) {
+    $courses = [];
+}
+
+// Fetch students with their enrolled courses
+$students = $pdo->query("SELECT s.student_id, s.full_name, s.email, s.created_at, sc.course_code 
+                        FROM students s 
+                        LEFT JOIN student_courses sc ON s.id = sc.student_id 
+                        ORDER BY s.created_at DESC")->fetchAll(PDO::FETCH_ASSOC);
 
 // Check for success message
 $success = isset($_GET['success']) && $_GET['success'] == '1';
@@ -828,7 +883,7 @@ $deleted = isset($_GET['deleted']) && $_GET['deleted'] == '1';
         <p class="header-subtitle">Manage student records and information.</p>
       </div>
       <div class="header-actions">
-        <button class="action-btn primary">
+        <button class="action-btn primary" onclick="openModal()">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -849,6 +904,7 @@ $deleted = isset($_GET['deleted']) && $_GET['deleted'] == '1';
               <th>Student ID</th>
               <th>Name</th>
               <th>Email</th>
+              <th>Course</th>
               <th>Status</th>
               <th>Actions</th>
             </tr>
@@ -859,17 +915,24 @@ $deleted = isset($_GET['deleted']) && $_GET['deleted'] == '1';
               <td><?php echo htmlspecialchars($student['student_id']); ?></td>
               <td><?php echo htmlspecialchars($student['full_name']); ?></td>
               <td><?php echo htmlspecialchars($student['email']); ?></td>
+              <td><?php echo htmlspecialchars($student['course_code'] ?? 'N/A'); ?></td>
               <td><span class="badge student">Active</span></td>
               <td>
                 <div style="display: flex; gap: 0.5rem;">
-                  <button class="action-btn edit-btn" onclick="openEditModal('<?php echo htmlspecialchars($student['student_id']); ?>', '<?php echo htmlspecialchars($student['full_name']); ?>', '<?php echo htmlspecialchars($student['email']); ?>')">
+                  <button class="action-btn edit-btn edit-student-btn" 
+                          data-student-id="<?php echo htmlspecialchars($student['student_id']); ?>"
+                          data-full-name="<?php echo htmlspecialchars($student['full_name']); ?>"
+                          data-email="<?php echo htmlspecialchars($student['email']); ?>"
+                          data-course="<?php echo htmlspecialchars($student['course_code'] ?? ''); ?>">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                       <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4L18.5 2.5z"/>
                     </svg>
                     Edit
                   </button>
-                  <button class="action-btn delete-btn" onclick="openDeleteModal('<?php echo htmlspecialchars($student['student_id']); ?>', '<?php echo htmlspecialchars($student['full_name']); ?>')">
+                  <button class="action-btn delete-btn delete-student-btn"
+                          data-student-id="<?php echo htmlspecialchars($student['student_id']); ?>"
+                          data-full-name="<?php echo htmlspecialchars($student['full_name']); ?>">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <polyline points="3 6 5 6 21 6"/>
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -919,6 +982,18 @@ $deleted = isset($_GET['deleted']) && $_GET['deleted'] == '1';
         <div class="error-message" id="email_error"></div>
       </div>
       <div class="form-group">
+        <label class="form-label" for="course">Course</label>
+        <select id="course" name="course" class="form-input" required>
+          <option value="">-- Select Course --</option>
+          <?php foreach ($courses as $course): ?>
+            <option value="<?php echo htmlspecialchars($course['course_code']); ?>">
+              <?php echo htmlspecialchars($course['course_name'] . ' (' . $course['course_code'] . ')'); ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+        <div class="error-message" id="course_error"></div>
+      </div>
+      <div class="form-group">
         <label class="form-label" for="password">Password</label>
         <input type="password" id="password" name="password" class="form-input" required placeholder="Enter password">
         <div class="error-message" id="password_error"></div>
@@ -958,6 +1033,17 @@ $deleted = isset($_GET['deleted']) && $_GET['deleted'] == '1';
         <input type="email" id="edit_email" name="email" class="form-input" required>
       </div>
       <div class="form-group">
+        <label class="form-label" for="edit_course">Course</label>
+        <select id="edit_course" name="course" class="form-input" required>
+          <option value="">-- Select Course --</option>
+          <?php foreach ($courses as $course): ?>
+            <option value="<?php echo htmlspecialchars($course['course_code']); ?>">
+              <?php echo htmlspecialchars($course['course_name'] . ' (' . $course['course_code'] . ')'); ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="form-group">
         <label class="form-label" for="edit_password">Password (leave blank to keep current)</label>
         <input type="password" id="edit_password" name="password" class="form-input" placeholder="Optional">
       </div>
@@ -995,7 +1081,9 @@ $deleted = isset($_GET['deleted']) && $_GET['deleted'] == '1';
 </div>
 
 <script>
-<?php if (isset($errors) && !empty($errors)): ?>
+<?php 
+if (isset($errors) && !empty($errors)): 
+?>
   // Show errors and open modal
   const errors = <?php echo json_encode($errors); ?>;
   document.addEventListener('DOMContentLoaded', function() {
@@ -1068,11 +1156,12 @@ function closeModal() {
   }, 200);
 }
 
-function openEditModal(studentId, fullName, email) {
+function openEditModal(studentId, fullName, email, course) {
   document.getElementById('edit_original_student_id').value = studentId;
   document.getElementById('edit_student_id').value = studentId;
   document.getElementById('edit_full_name').value = fullName;
   document.getElementById('edit_email').value = email;
+  document.getElementById('edit_course').value = course;
   document.getElementById('edit_password').value = '';
   const overlay = document.getElementById('editStudentModal');
   overlay.classList.add('active');
@@ -1099,34 +1188,52 @@ function closeDeleteModal() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-  const addStudentBtn = document.querySelector('.action-btn.primary');
-  if (addStudentBtn) {
-    addStudentBtn.addEventListener('click', function(e) {
-      e.preventDefault();
-      openModal();
+  // Edit button event listeners
+  document.querySelectorAll('.edit-student-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      const studentId = this.getAttribute('data-student-id');
+      const fullName = this.getAttribute('data-full-name');
+      const email = this.getAttribute('data-email');
+      const course = this.getAttribute('data-course');
+      openEditModal(studentId, fullName, email, course);
+    });
+  });
+
+  // Delete button event listeners
+  document.querySelectorAll('.delete-student-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      const studentId = this.getAttribute('data-student-id');
+      const fullName = this.getAttribute('data-full-name');
+      openDeleteModal(studentId, fullName);
+    });
+  });
+
+  const overlay = document.getElementById('addStudentModal');
+  if (overlay) {
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) {
+        closeModal();
+      }
     });
   }
 
-  const overlay = document.getElementById('addStudentModal');
-  overlay.addEventListener('click', function(e) {
-    if (e.target === overlay) {
-      closeModal();
-    }
-  });
-
   const editOverlay = document.getElementById('editStudentModal');
-  editOverlay.addEventListener('click', function(e) {
-    if (e.target === editOverlay) {
-      closeEditModal();
-    }
-  });
+  if (editOverlay) {
+    editOverlay.addEventListener('click', function(e) {
+      if (e.target === editOverlay) {
+        closeEditModal();
+      }
+    });
+  }
 
   const deleteOverlay = document.getElementById('deleteModal');
-  deleteOverlay.addEventListener('click', function(e) {
-    if (e.target === deleteOverlay) {
-      closeDeleteModal();
-    }
-  });
+  if (deleteOverlay) {
+    deleteOverlay.addEventListener('click', function(e) {
+      if (e.target === deleteOverlay) {
+        closeDeleteModal();
+      }
+    });
+  }
 
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
